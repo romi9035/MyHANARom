@@ -1,0 +1,156 @@
+_schema-version: "3.1"
+ID: MyHANARom
+description: A simple CAP project.
+version: 1.0.0
+
+parameters:
+  deploy_mode: html5-repo
+  enable-parallel-deployments: true
+
+build-parameters:
+  before-all:
+  - builder: custom
+    commands:
+    - npm ci
+    - npx cds build --production
+
+
+modules:
+# --------------------- SERVER MODULE ------------------------
+- name: MyHANARom-srv
+# ------------------------------------------------------------
+  type: nodejs
+  path: gen/srv
+  requires:
+  - name: MyHANARom-auth
+  - name: MyHANARom-db
+  provides:
+  - name: srv-api
+    properties:
+      srv-url: ${default-url}
+  parameters:
+    buildpack: nodejs_buildpack
+    readiness-health-check-http-endpoint: /health
+    readiness-health-check-type: http
+  build-parameters:
+    builder: npm
+
+# -------------------- SIDECAR MODULE ------------------------
+- name: MyHANARom-db-deployer
+# ------------------------------------------------------------
+  type: hdb
+  path: gen/db
+  requires:
+  - name: MyHANARom-db
+  parameters:
+    buildpack: nodejs_buildpack
+
+# ------------------ APPLICATION CONTENT ---------------------
+- name: MyHANARom-app-content
+# ------------------------------------------------------------
+  type: com.sap.application.content
+  path: .
+  requires:
+  - name: MyHANARom_html_repo_host
+    parameters:
+      content-target: true
+  build-parameters:
+    build-result: resources
+    requires:
+    - artifacts:
+      - interactionsitems.zip
+      name: interactionsitems
+      target-path: resources/
+
+# ------------- APPLICATION: Interaction Items ----------------
+- name: interactionsitems
+# ------------------------------------------------------------
+  type: html5
+  path: app/interactions_items
+  build-parameters:
+    build-result: dist
+    builder: custom
+    commands:
+    - npm install
+    - npm run build:cf
+    supported-platforms: []
+
+
+- name: MyHANARom
+  type: approuter.nodejs
+  path: app/
+  requires:
+  - name: srv-api
+    group: destinations
+    properties:
+      forwardAuthToken: true
+      name: srv-api
+      url: ~{srv-url}
+  - name: MyHANARom-auth
+  - name: MyHANARom-destination-service
+    group: destinations
+    properties:
+      forwardAuthToken: false
+      name: ui5
+      url: https://ui5.sap.com
+  parameters:
+    disk-quota: 256M
+    keep-existing-routes: true
+    memory: 256M
+  build-parameters:
+    ignore:
+    - default-env.json
+    - .env
+
+
+resources:
+- name: MyHANARom-auth
+  type: org.cloudfoundry.managed-service
+  parameters:
+    config:
+      tenant-mode: dedicated
+      xsappname: MyHANARom-${org}-${space}
+    path: ./xs-security.json
+    service: xsuaa
+    service-plan: application
+
+- name: MyHANARom-db
+  type: com.sap.xs.hdi-container
+  parameters:
+    service: hana
+    service-plan: hdi-shared
+
+- name: MyHANARom_html_repo_host
+  type: org.cloudfoundry.managed-service
+  parameters:
+    service: html5-apps-repo
+    service-plan: app-host
+- name: MyHANARom-destination-service
+  type: org.cloudfoundry.managed-service
+  parameters:
+    config:
+      HTML5Runtime_enabled: true
+      init_data:
+        instance:
+          destinations:
+          - Authentication: NoAuthentication
+            Name: ui5
+            ProxyType: Internet
+            Type: HTTP
+            URL: https://ui5.sap.com
+          - Authentication: NoAuthentication
+            HTML5.DynamicDestination: true
+            HTML5.ForwardAuthToken: true
+            Name: MyHANARom-srv-api
+            ProxyType: Internet
+            Type: HTTP
+            URL: ~{srv-api/srv-url}
+          existing_destinations_policy: update
+      version: 1.0.0
+    service: destination
+    service-name: MyHANARom-destination-service
+    service-plan: lite
+  requires:
+    - name: srv-api
+
+
